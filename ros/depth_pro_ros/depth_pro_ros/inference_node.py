@@ -6,17 +6,25 @@
 
 """
 import rclpy
+import threading
+
+from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
 from depth_pro_ros.inference import DepthProInference
 
 def main(args=None) -> None:
     rclpy.init(args=args)
 
-    dpr = DepthProInference()
+    node = DepthProInference()
+    executor = MultiThreadedExecutor()
 
-    rclpy.spin(dpr)
-
-    dpr.destroy_node()
-    rclpy.shutdown()
+    executor.add_node(node)
+    executor_thread = threading.Thread(target=executor.spin, daemon=True)
+    try:
+        executor_thread.start()
+    finally:
+        executor_thread.join()
+        node.destroy_node()
+        rclpy.shutdown()
 
 if __name__ == "__main__":
     main()

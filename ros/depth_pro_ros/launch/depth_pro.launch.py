@@ -15,7 +15,7 @@ def generate_launch_description():
 
     share_dir = get_package_share_directory("depth_pro_ros")
 
-    intrinsics_path = os.path.join(share_dir, 'blackfly-5mm.yaml')
+    intrinsics_path = os.path.join(share_dir, 'blackfly-deimos.yaml')
     model_path = os.path.join(share_dir, 'depth_pro.pt')
 
     return LaunchDescription([
@@ -25,7 +25,7 @@ def generate_launch_description():
             name='depth_pro',
             output='screen',
             remappings=[
-                ("/image", "/camera/image_color")
+                ("/image/compressed", "/flir_camera/image_raw/compressed")
             ],
             parameters=[
                 {'intrinsics_path': intrinsics_path},

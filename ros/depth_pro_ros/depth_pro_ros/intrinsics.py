@@ -6,6 +6,7 @@
 """
 
 import yaml
+import torch
 
 class FocalLength:
 
@@ -19,6 +20,10 @@ class FocalLength:
     @property
     def x(self) -> float:
         return self.fx_
+
+    @property
+    def x_tensor(self) -> torch.Tensor:
+        return torch.tensor(self.fx_)
 
     @property
     def y(self) -> float:
