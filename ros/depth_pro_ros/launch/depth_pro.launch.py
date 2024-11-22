@@ -31,7 +31,7 @@ def generate_launch_description():
                 {'intrinsics_path': intrinsics_path},
                 {'model_path': model_path},
                 {'publish_pc': True},
-                {'pc_down_res': 4},
+                {'pc_down_res': 8},
             ]
         ),
         Node(package = "tf2_ros", 
