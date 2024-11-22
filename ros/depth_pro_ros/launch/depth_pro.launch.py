@@ -30,6 +30,12 @@ def generate_launch_description():
             parameters=[
                 {'intrinsics_path': intrinsics_path},
                 {'model_path': model_path},
+                {'publish_pc': True},
+                {'pc_down_res': 4},
             ]
-        )
+        ),
+        Node(package = "tf2_ros", 
+             executable = "static_transform_publisher",
+             arguments = ["0", "0.0", "0.0", "1.571", "-1.40", "0.0", "world", "map"]
+             )
     ])

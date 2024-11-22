@@ -18,10 +18,10 @@ from cv_bridge import CvBridge
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, CompressedImage, PointCloud2, PointField
+from std_msgs.msg import Float32MultiArray, MultiArrayDimension
 from std_msgs.msg import Header
 from depth_pro_ros.intrinsics import CameraIntrinsics
 from depth_pro.depth_pro import DepthProConfig
-#from depth_image_proc.depth_conversions import convert_depth_image_to_pointcloud2
 
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 
@@ -39,10 +39,15 @@ class DepthProInference(Node):
 
         self.declare_parameter("intrinsics_path", "./config/blackfly.yaml")
         self.declare_parameter("model_path", "./models/depth_pro.pt")
+        self.declare_parameter("publish_pc", True)
+        self.declare_parameter("pc_down_res", 4)
 
         intrinsics_path = self.get_parameter("intrinsics_path").get_parameter_value().string_value
         model_path = self.get_parameter("model_path").get_parameter_value().string_value
-        
+
+        self.publish_pc_ = self.get_parameter("publish_pc").get_parameter_value().bool_value
+        self.pc_down_res_factor_ = self.get_parameter("pc_down_res").get_parameter_value().integer_value
+
         self.sub_group_ = rclpy.callback_groups.MutuallyExclusiveCallbackGroup()
         self.timer_group_ = rclpy.callback_groups.MutuallyExclusiveCallbackGroup()
 
@@ -51,7 +56,10 @@ class DepthProInference(Node):
         self.img_sub_ = self.create_subscription(Image, '/image', self.imageCallback, 1, callback_group=self.sub_group_)
         self.cimg_sub_ =self.create_subscription(CompressedImage, '/image/compressed', self.compressedImageCallback, qos_profile, callback_group=self.sub_group_)
 
-        self.pc_pub_ = self.create_publisher(PointCloud2, '/cloud', 1)
+        self.dimg_pub_ = self.create_publisher(Float32MultiArray, '/mono/depth', 1)
+
+        if self.publish_pc_:
+            self.pc_pub_ = self.create_publisher(PointCloud2, '/mono/cloud', 1)
 
         config = DepthProConfig(patch_encoder_preset="dinov2l16_384",
                                 image_encoder_preset="dinov2l16_384",
@@ -73,6 +81,7 @@ class DepthProInference(Node):
 
         self.img_ = None
         self.count_ = 0
+        self.get_logger().info("Publishing Point Cloud: %s" %self.publish_pc_)
         self.get_logger().info("Depth Pro Initialized")
 
     def infernceCallback(self) -> None:
@@ -80,39 +89,58 @@ class DepthProInference(Node):
             self.get_logger().info("starting inference")
             img = self.transform_(self.img_)
             #print("focal length: ", self.intrinsics_.focal_length.x)
-            pred = self.model_.infer(img.to(self.device_), self.intrinsics_.focal_length.x_tensor.to(self.device_))
+            f_px = self.intrinsics_.focal_length.x
+            pred = self.model_.infer(img.to(self.device_), torch.tensor(f_px).to(self.device_))
 
-            depth = pred["depth"]
+            depth = pred["depth"].cpu().numpy()
+            
+            msg = Float32MultiArray()
+            msg.layout.dim = [
+                MultiArrayDimension(label='rows', size=depth.shape[0], stride=depth.shape[0]*depth.shape[1]),
+                MultiArrayDimension(label='cols', size=depth.shape[1], stride=depth.shape[1])
+            ]
+            msg.data = depth.flatten().tolist()
+            self.dimg_pub_.publish(msg)
             self.get_logger().info("finished inference")
-            # publish it as depth image?? and point cloud
-            #self.get_logger().info("shape: %s" %depth.shape)
-            #print(depth.shape)
-            msg = self.imageToPointCloud(depth.cpu().numpy())
-            self.pc_pub_.publish(msg)
+
+            if self.publish_pc_:
+                msg = self.imageToPointCloud(depth)
+                self.pc_pub_.publish(msg)
 
             
     def imageToPointCloud(self, depth : np.ndarray) -> PointCloud2:
+        h, w = depth.shape[1] // self.pc_down_res_factor_, depth.shape[0] // self.pc_down_res_factor_
+        depth = cv2.resize(depth, (w,h), interpolation=cv2.INTER_LINEAR)
+
         height, width = depth.shape
 
         x = np.tile(np.arange(width), (height, 1))
         y = np.tile(np.arange(height), (width, 1)).T
         
+        fx = self.intrinsics_.focal_length.x / self.pc_down_res_factor_
+        fy = self.intrinsics_.focal_length.y / self.pc_down_res_factor_
+        cx = self.intrinsics_.focal_length.cx / self.pc_down_res_factor_
+        cy = self.intrinsics_.focal_length.cy / self.pc_down_res_factor_
+
         # Calculate 3D coordinates
         z = depth
-        x = (x - self.intrinsics_.focal_length.cx) * z / self.intrinsics_.focal_length.x
-        y = (y - self.intrinsics_.focal_length.cy) * z / self.intrinsics_.focal_length.y
-        
+        x = (x - cx) * z / fx
+        y = (y - cy) * z / fy
+
         # Stack coordinates and reshape
-        xyz = np.stack((x, y, z), axis=-1)
+        xyz = np.stack((x,y,z), axis=-1)
         points = xyz.reshape(-1, 3)
-        #points = cv2.resize(points, (1024, 768), interpolation = cv2.INTER_LINEAR)
+       
         # Remove invalid points (where depth is 0 or NaN)
         mask = np.isfinite(points[:, 2]) & (points[:, 2] > 0)
         points = points[mask]
-
+        
+        # rotate 90 clockwise about the x-axis
+        # rotation_matrix = np.array([[1,0,0],[0, 0, 1],[0, -1, 0]])
+        # points = points @ rotation_matrix.T
 
         msg = PointCloud2()
-        msg.header.frame_id = "map"
+        msg.header.frame_id = "world"
         msg.height = 1 
         msg.width = len(points)
         msg.is_dense = False
@@ -141,6 +169,7 @@ class DepthProInference(Node):
     def imageCallback(self, msg : Image) -> None:
         try:
             self.img_ = self.bridge_.imgmsg_to_cv2(msg, 'bgr8')
+            #self.img_ = cv2.resize(self.img_, (512, 384))
         except Exception as e:
             self.get_logger().error(f"Could not convert image: {e}")
             return 
